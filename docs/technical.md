@@ -71,6 +71,75 @@ windowrule {
 
 不同打包方式下窗口 `class` 可能不同；如果规则没有生效，可以用 `hyprctl clients` 查看实际 `class` / `title` 后再调整匹配条件。
 
+## iOS 移动端
+
+桌面端由 Electron 承载，而 Electron 不支持 iOS，因此 iOS 包用 Capacitor 把同一套 Vite 构建产物
+（`dist/`）包进原生 WKWebView 工程。iOS 与 Web 端共用前端代码，桌面专属能力自然缺席，实际表现
+与 Web 版一致。
+
+### 环境要求
+
+打包 iOS 需要 macOS 机器与 Xcode（命令行的 `xcode-select --install`），无法在 Windows / Linux
+上完成。Node.js 沿用仓库要求（>= 24）。
+
+### 构建与运行
+
+```bash
+npm install
+npm run ios:sync   # vite build + cap sync ios，把 dist/ 同步进原生工程
+npm run ios:open   # 用 Xcode 打开 ios/App/App.xcodeproj
+```
+
+根目录的 `./ios.sh` 是等价的终端入口，额外带环境自检与 `archive` 出包：
+
+```bash
+./ios.sh doctor    # 检查 macOS / Xcode / Node 环境
+./ios.sh sync      # 同 npm run ios:sync
+./ios.sh open      # 同 npm run ios:open
+./ios.sh run       # 同 npm run ios:run
+./ios.sh archive   # Release 配置 archive 出 build/ios/App.xcarchive（需已配置签名）
+```
+
+在 Xcode 里选好签名团队与真机 / 模拟器后运行或 Archive 出包；`npm run ios:run` 可直接构建并
+部署到已连接的设备。首次构建前需在 Xcode 配置 Development Team，Bundle Identifier 为
+`top.izuna.foliamajor`，与桌面端一致。
+
+### 仅横屏
+
+iOS 只声明左右两个横向方向，锁定在 `ios/App/App/Info.plist` 的 `UISupportedInterfaceOrientations`
+（iPhone）与 `UISupportedInterfaceOrientations~ipad`（iPad），iPad 另设 `UIRequiresFullScreen`
+以免分屏时无法维持横向。不要改回竖屏方向：Folia 的歌词与 visualizer 都是横屏布局。
+
+### 后端配置
+
+iOS 打包后页面来源是 `capacitor://localhost`，站内没有自带的服务端函数，需要在构建时指向一个
+已部署的 Folia 后端：
+
+| 变量 | 说明 |
+| --- | --- |
+| `VITE_FOLIA_API_BASE` | 已部署的 Folia 后端地址（如 `https://folia.example.com`），把同源 `/api/*`（歌词代理、AI 主题、分词）转发过去；留空时保持同源行为 |
+| `VITE_NETEASE_API_BASE` | 网易云 API 实例地址 |
+| `VITE_KUGOU_API_BASE` | Web 版酷狗 API 实例地址（可选） |
+| `VITE_QQ_API_BASE` | QQ 音乐 API 实例地址（可选，需绝对地址） |
+| `VITE_AI_PROVIDER` | `google` 或 `openai` |
+
+`VITE_FOLIA_API_BASE` 的实现见 `src/utils/webApiBase.ts`：它只在配置后生效，未配置时 Web / Electron
+构建行为完全不变。被指向的后端需要允许来自 `capacitor://localhost` 的跨域请求（`/api/*` 的 CORS
+头），否则打包后的在线功能不可用。
+
+也可以把 `capacitor.config.ts` 的 `server.url` 指向已部署的 Folia 网址，让 WebView 直接加载，这样
+`/api/*` 与登录态都走部署站自身同源；代价是失去离线壳，且可能被 App Store 判定为「仅网页包装」。
+
+### 与桌面端的差异
+
+iOS 版等同于 Web 版：本地文件库扫描、壁纸模式、ffmpeg 转码、设备端 htdemucs 分析、Discord Rich
+Presence、托盘 / 自动更新 / 自绘窗口控件等桌面或主进程能力不可用，相关入口按 Web 端逻辑降级。
+
+### 图标与启动图
+
+iOS 工程默认使用 Capacitor 占位图标。准备 1024×1024 应用图标与 2732×2732 启动图后，可运行
+`npx @capacitor/assets generate --ios` 生成到 `Assets.xcassets`。
+
 ## 部署与开发
 
 ### 后端 API
@@ -236,6 +305,12 @@ vercel dev
 | `npm run build:electron` | 打包桌面端应用 |
 | `npm run build:windowtolayer` | 单独构建 Linux 壁纸模式依赖的 `build/windowtolayer` |
 | `npm run build:wallpaper-helper` | 单独构建 Windows 壁纸模式依赖的 `build/folia-wallpaper-helper.exe`（非 Windows 主机为 no-op） |
+| `npm run build:ios` | 仅构建 iOS 包所需的 Web 产物（`vite build`） |
+| `npm run ios:sync` | 构建并把 `dist/` 同步进 `ios/` 原生工程 |
+| `npm run ios:open` | 用 Xcode 打开 iOS 工程 |
+| `npm run ios:run` | 构建、同步并部署到已连接的 iOS 设备 |
+| `npm run ios:doctor` | 检查 macOS / Xcode / Node 环境（等价 `./ios.sh doctor`） |
+| `npm run ios:archive` | Release 配置 archive 出 `build/ios/App.xcarchive`（等价 `./ios.sh archive`） |
 | `npm run stage:client` | 打开本地 Stage API 联调台 |
 
 所有 `dev:electron*` 脚本都会注入 `FOLIA_WINDOWTOLAYER_PATH=build/windowtolayer`，让开发运行也能找到壁纸模式所需的

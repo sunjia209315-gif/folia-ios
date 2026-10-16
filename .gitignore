@@ -78,6 +78,9 @@ reference/
 mods/*.zip
 
 
+# ios.sh archive 生成的 xcarchive 是本地出包产物，不入库。
+build/ios/
+
 # Built by packaging/windows/build-wallpaper-helper.mjs (Windows wallpaper mode helper).
 build/folia-wallpaper-helper.exe
 packaging/windows/wallpaper-helper/target/

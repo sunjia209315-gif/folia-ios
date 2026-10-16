@@ -23,6 +23,12 @@ declare global {
       aiProvider?: 'gemini' | 'openai';
       /** Docker gateway 注入 'docker'；其他部署不带这个字段。 */
       deployment?: 'docker';
+      /**
+       * 后端 base（如 `https://folia.example.com`）。打包成静态资源的原生 App 用它把
+       * 同源 `/api/*` 请求转发到已部署的 Folia 后端；Web / Electron 构建留空即可。
+       * 见 src/utils/webApiBase.ts。
+       */
+      webApiBase?: string;
     };
   }
 

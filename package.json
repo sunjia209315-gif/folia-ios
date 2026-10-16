@@ -54,6 +54,13 @@
     "build:windowtolayer": "node packaging/linux/build-windowtolayer.mjs",
     "build:wallpaper-helper": "node packaging/windows/build-wallpaper-helper.mjs",
     "build:ffmpeg": "node packaging/ffmpeg/fetch-ffmpeg.mjs",
+    "build:ios": "vite build",
+    "ios:add": "cap add ios",
+    "ios:sync": "npm run build:ios && cap sync ios",
+    "ios:open": "cap open ios",
+    "ios:run": "npm run build:ios && cap sync ios && cap run ios",
+    "ios:doctor": "./ios.sh doctor",
+    "ios:archive": "./ios.sh archive",
     "contributors:add": "npx all-contributors-cli add",
     "contributors:generate": "npx all-contributors-cli generate",
     "models:fetch": "node build/fetchModels.mjs",
@@ -205,6 +212,8 @@
     }
   },
   "dependencies": {
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/ios": "^8.5.3",
     "@google/genai": "^2.24.0",
     "@neteasecloudmusicapienhanced/api": "^4.41.1",
     "@xhayper/discord-rpc": "^1.5.1",
@@ -224,6 +233,7 @@
   },
   "devDependencies": {
     "@applemusic-like-lyrics/ttml": "^1.0.1",
+    "@capacitor/cli": "^8.5.3",
     "@chenglou/pretext": "^0.0.9",
     "@emnapi/core": "1.11.3",
     "@emnapi/runtime": "1.11.3",
