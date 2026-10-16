@@ -98,6 +98,7 @@ npm run ios:open   # 用 Xcode 打开 ios/App/App.xcodeproj
 ./ios.sh open      # 同 npm run ios:open
 ./ios.sh run       # 同 npm run ios:run
 ./ios.sh archive   # Release 配置 archive 出 build/ios/App.xcarchive（需已配置签名）
+./ios.sh secrets   # 从 .p12 / .mobileprovision 自动写入 CI 签名 Secrets
 ```
 
 在 Xcode 里选好签名团队与真机 / 模拟器后运行或 Archive 出包；`npm run ios:run` 可直接构建并
@@ -122,8 +123,19 @@ npm run ios:open   # 用 Xcode 打开 ios/App/App.xcodeproj
 | `IOS_PROFILE_SPECIFIER` | provisioning profile 的名称 |
 
 导出方式默认 `debugging`（仅限已登记设备），可用仓库变量 `IOS_EXPORT_METHOD` 覆盖
-（`release-testing` 为 Ad Hoc 分发，`app-store-connect` 为上架）。在 macOS 上生成 base64：
-`base64 -i cert.p12 | pbcopy`。
+（`release-testing` 为 Ad Hoc 分发，`app-store-connect` 为上架）。
+
+证书与 profile 仍需从 Apple 开发者后台申请（这一步无法自动化），拿到文件后交给脚本即可：
+
+```bash
+IOS_CERT_PASSWORD='p12密码' ./ios.sh secrets \
+  --cert cert.p12 --profile folia.mobileprovision \
+  --method debugging --run
+```
+
+脚本会解出 `.mobileprovision` 里的 `TeamIdentifier` 与 `Name`，转 base64 后写入上表 5 个
+Secret；`--method` 省略则不设 `IOS_EXPORT_METHOD`，`--run` 会在写完后台触发并跟踪一次
+workflow。手工方式则是 `base64 -i cert.p12 | pbcopy` 后逐个粘贴。
 
 ### 仅横屏
 
