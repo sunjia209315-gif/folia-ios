@@ -2,10 +2,17 @@ name: iOS Package Build
 
 # iOS 包由 Capacitor 把 vite 产物装进原生 WKWebView 工程（ios/），只能在 macOS 上编译
 # （Electron 不支持 iOS）。这里在 macOS runner 上复刻 ./ios.sh 的构建路径：vite build +
-# cap sync ios 后 xcodebuild archive，产出未签名的 App.xcarchive 与 ipa。
+# cap sync ios 后 xcodebuild archive，并上传 App.xcarchive 与 ipa。
 #
-# CI 里没有 Apple 签名证书，所以产物是未签名的：可用来验证工程能编过、并作为本地重签的输入。
-# 要直接装到设备，请在本地用 ./ios.sh 构建并在 Xcode 里配好 Development Team 后出包。
+# 签名策略：默认输出未签名的产物（CI 无 Apple 证书，仅用于验证工程能编过、并作为本地重签的输入）。
+# 一旦仓库配好了下列 secrets，就自动改为手动签名并导出已签名的 ipa：
+#   IOS_CERT_P12                    开发者证书 .p12 的 base64（含私钥）
+#   IOS_CERT_PASSWORD               上面 .p12 的密码
+#   IOS_PROVISIONING_PROFILE        .mobileprovision 的 base64
+#   IOS_TEAM_ID                     Apple Developer Team ID
+#   IOS_PROFILE_SPECIFIER           provisioning profile 的名称（Xcode 里显示的 Profile 名）
+# 可选仓库变量 vars.IOS_EXPORT_METHOD 覆盖导出方式，默认 debugging（仅限已登记设备）；
+# 其它常用值：release-testing（Ad Hoc 分发）、app-store-connect（上架）。
 on:
   workflow_dispatch:
   push:
@@ -37,6 +44,14 @@ jobs:
     name: Build iOS package
     runs-on: macos-latest
     timeout-minutes: 45
+    # 是否走签名路径由 IOS_CERT_P12 是否存在决定；为空时下面所有签名相关步骤都会被跳过。
+    env:
+      IOS_CERT_P12: ${{ secrets.IOS_CERT_P12 }}
+      IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+      IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+      IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+      IOS_PROFILE_SPECIFIER: ${{ secrets.IOS_PROFILE_SPECIFIER }}
+      IOS_EXPORT_METHOD: ${{ vars.IOS_EXPORT_METHOD }}
 
     steps:
       - name: Check out Git repository
@@ -77,9 +92,36 @@ jobs:
             grep -q "$orientation" "$plist" || { echo "::error::缺少 $orientation"; exit 1; }
           done
 
+      # 把 .p12 导入临时 keychain，让后续 codesign 找得到签名身份。
+      - name: Import signing certificate
+        if: env.IOS_CERT_P12 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/build.keychain-db"
+          password="$(openssl rand -hex 16)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$IOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$IOS_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+
+      - name: Install provisioning profile
+        if: env.IOS_CERT_P12 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "$IOS_PROVISIONING_PROFILE" | base64 --decode \
+            > "$HOME/Library/MobileDevice/Provisioning Profiles/folia.mobileprovision"
+
       # 未签名 archive。参数与 Capacitor CLI 的 buildiOS 一致（-project App.xcodeproj -scheme App
-      # -destination generic/platform=iOS archive），额外关掉签名以适配无证书的 CI。
+      # -destination generic/platform=iOS archive），额外关掉签名。
       - name: Archive (unsigned)
+        if: env.IOS_CERT_P12 == ''
         working-directory: ios/App
         run: |
           set -euo pipefail
@@ -93,8 +135,56 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
+      # 已签名 archive：手动签名，身份从刚导入的证书匹配，profile 由 specifier 指定。
+      - name: Archive (signed)
+        if: env.IOS_CERT_P12 != ''
+        working-directory: ios/App
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_SPECIFIER"
+
+      # 已签名 ipa：用 ExportOptions 指定 method / team / profile 后导出。
+      - name: Export signed ipa
+        if: env.IOS_CERT_P12 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          method="${IOS_EXPORT_METHOD:-debugging}"
+          app_id="$(node -p "require('./ios/App/App/capacitor.config.json').appId")"
+          version="$(node -p "require('./package.json').version")"
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          <key>method</key><string>${method}</string>
+          <key>teamID</key><string>${IOS_TEAM_ID}</string>
+          <key>signingStyle</key><string>manual</string>
+          <key>provisioningProfiles</key>
+          <dict>
+          <key>${app_id}</key><string>${IOS_PROFILE_SPECIFIER}</string>
+          </dict>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export"
+          mkdir -p build/ios
+          cp "$(ls "$RUNNER_TEMP/export/"*.ipa | head -n 1)" "build/ios/Folia-${version}.ipa"
+
       # 未签名 ipa：把 archive 里的 .app 按 Payload/ 结构打包，便于本地用工具重签。
       - name: Package unsigned ipa
+        if: env.IOS_CERT_P12 == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -108,9 +198,9 @@ jobs:
       - name: Upload iOS archive and ipa
         uses: actions/upload-artifact@v6
         with:
-          name: folia-ios-unsigned
+          name: folia-ios
           path: |
             ${{ runner.temp }}/App.xcarchive
-            build/ios/*-unsigned.ipa
+            build/ios/*.ipa
           if-no-files-found: error
           retention-days: 14
