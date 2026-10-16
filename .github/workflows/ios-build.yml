@@ -92,30 +92,39 @@ jobs:
             grep -q "$orientation" "$plist" || { echo "::error::缺少 $orientation"; exit 1; }
           done
 
-      # 把 .p12 导入临时 keychain，让后续 codesign 找得到签名身份。
-      - name: Import signing certificate
+      # 把证书与描述文件装进 runner：.p12 导入临时 keychain 让 codesign 找得到签名身份，
+      # profile 放进 ~/Library/MobileDevice/Provisioning Profiles 供 Xcode 引用。
+      - name: Set up signing
         if: env.IOS_CERT_P12 != ''
         shell: bash
         run: |
           set -euo pipefail
+
+          # secret 里的 base64 可能带换行；且新旧 macOS 的解码选项不一致（-d / -D），这里统一兜底。
+          decode_b64() {
+            local tmp
+            tmp="$(mktemp)"
+            printf '%s' "$1" | tr -d '\r\n' > "$tmp"
+            if ! base64 -d < "$tmp" 2>/dev/null; then
+              base64 -D < "$tmp"
+            fi
+            rm -f "$tmp"
+          }
+
           keychain="$RUNNER_TEMP/build.keychain-db"
           password="$(openssl rand -hex 16)"
           security create-keychain -p "$password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$password" "$keychain"
-          echo "$IOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+
+          decode_b64 "$IOS_CERT_P12" > "$RUNNER_TEMP/cert.p12"
           security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$IOS_CERT_PASSWORD" \
             -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
           security list-keychains -d user -s "$keychain"
 
-      - name: Install provisioning profile
-        if: env.IOS_CERT_P12 != ''
-        shell: bash
-        run: |
-          set -euo pipefail
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          echo "$IOS_PROVISIONING_PROFILE" | base64 --decode \
+          decode_b64 "$IOS_PROVISIONING_PROFILE" \
             > "$HOME/Library/MobileDevice/Provisioning Profiles/folia.mobileprovision"
 
       # 未签名 archive。参数与 Capacitor CLI 的 buildiOS 一致（-project App.xcodeproj -scheme App
