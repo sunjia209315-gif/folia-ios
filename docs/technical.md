@@ -104,6 +104,27 @@ npm run ios:open   # 用 Xcode 打开 ios/App/App.xcodeproj
 部署到已连接的设备。首次构建前需在 Xcode 配置 Development Team，Bundle Identifier 为
 `top.izuna.foliamajor`，与桌面端一致。
 
+### CI 出包（GitHub Actions）
+
+`.github/workflows/ios-build.yml` 在 macOS runner 上编译 iOS 包：先 `npm run ios:sync`，再
+`xcodebuild archive`，最后上传 `App.xcarchive` 与 ipa。触发方式为手动 `workflow_dispatch`、
+`main` 上 iOS 相关路径变更、以及命中的 PR。
+
+默认产出**未签名**的产物（CI 里没有 Apple 证书，仅用于验证工程能编过、并作为本地重签的输入）。
+在仓库配好下列 Secrets 后会自动改为手动签名并导出**已签名** ipa：
+
+| Secret | 说明 |
+| --- | --- |
+| `IOS_CERT_P12` | 开发者证书 `.p12` 的 base64（含私钥） |
+| `IOS_CERT_PASSWORD` | `.p12` 的密码 |
+| `IOS_PROVISIONING_PROFILE` | `.mobileprovision` 的 base64 |
+| `IOS_TEAM_ID` | Apple Developer Team ID |
+| `IOS_PROFILE_SPECIFIER` | provisioning profile 的名称 |
+
+导出方式默认 `debugging`（仅限已登记设备），可用仓库变量 `IOS_EXPORT_METHOD` 覆盖
+（`release-testing` 为 Ad Hoc 分发，`app-store-connect` 为上架）。在 macOS 上生成 base64：
+`base64 -i cert.p12 | pbcopy`。
+
 ### 仅横屏
 
 iOS 只声明左右两个横向方向，锁定在 `ios/App/App/Info.plist` 的 `UISupportedInterfaceOrientations`
