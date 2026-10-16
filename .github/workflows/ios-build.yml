@@ -1,0 +1,116 @@
+name: iOS Package Build
+
+# iOS 包由 Capacitor 把 vite 产物装进原生 WKWebView 工程（ios/），只能在 macOS 上编译
+# （Electron 不支持 iOS）。这里在 macOS runner 上复刻 ./ios.sh 的构建路径：vite build +
+# cap sync ios 后 xcodebuild archive，产出未签名的 App.xcarchive 与 ipa。
+#
+# CI 里没有 Apple 签名证书，所以产物是未签名的：可用来验证工程能编过、并作为本地重签的输入。
+# 要直接装到设备，请在本地用 ./ios.sh 构建并在 Xcode 里配好 Development Team 后出包。
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - capacitor.config.ts
+      - ios/**
+      - ios.sh
+      - package.json
+      - package-lock.json
+      - .github/workflows/ios-build.yml
+  pull_request:
+    paths:
+      - capacitor.config.ts
+      - ios/**
+      - ios.sh
+      - .github/workflows/ios-build.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios:
+    name: Build iOS package
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # 与 pr-unit-tests 一致：根依赖树约 1.4GB，缓存 node_modules 比缓存 ~/.npm 更省时
+      # （瓶颈是解包落盘）。key 带上运行器与 Node 版本，避免跨环境命中到不一致的原生二进制。
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-modules-macos-latest-node24-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build web assets and sync iOS project
+        run: npm run ios:sync
+
+      # 仅横屏是 iOS 包的硬约束：编译前确认 Info.plist 没被改回竖屏方向。
+      - name: Verify landscape-only orientation
+        shell: bash
+        run: |
+          set -euo pipefail
+          plist=ios/App/App/Info.plist
+          if grep -q 'UIInterfaceOrientationPortrait' "$plist"; then
+            echo "::error::$plist 保留了竖屏方向，iOS 包必须仅横屏"
+            exit 1
+          fi
+          for orientation in UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight; do
+            grep -q "$orientation" "$plist" || { echo "::error::缺少 $orientation"; exit 1; }
+          done
+
+      # 未签名 archive。参数与 Capacitor CLI 的 buildiOS 一致（-project App.xcodeproj -scheme App
+      # -destination generic/platform=iOS archive），额外关掉签名以适配无证书的 CI。
+      - name: Archive (unsigned)
+        working-directory: ios/App
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      # 未签名 ipa：把 archive 里的 .app 按 Payload/ 结构打包，便于本地用工具重签。
+      - name: Package unsigned ipa
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(ls -d "$RUNNER_TEMP/App.xcarchive/Products/Applications/"*.app | head -n 1)"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$app" "$RUNNER_TEMP/Payload/"
+          version="$(node -p "require('./package.json').version")"
+          mkdir -p build/ios
+          (cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/build/ios/Folia-${version}-unsigned.ipa" Payload)
+
+      - name: Upload iOS archive and ipa
+        uses: actions/upload-artifact@v6
+        with:
+          name: folia-ios-unsigned
+          path: |
+            ${{ runner.temp }}/App.xcarchive
+            build/ios/*-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
